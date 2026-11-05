@@ -691,7 +691,7 @@ static int cmp_double(const void *p, const void *q)
     return (a > b) - (a < b);
 }
 
-int slitdec_ox(     int ncols,
+int slitdec_ox_ylim(int ncols,
                     int nrows,
                     double *im,
                     double *pix_unc,
@@ -714,7 +714,8 @@ int slitdec_ox(     int ncols,
                     double *sL,
                     double *model,
                     double *unc,
-                    double *info)
+                    double *info,
+                    int y_lower_lim)
 {
     /* Parameters as slitdec() except:
        osample_x : fine spectrum bins per detector column (>= 1)
@@ -723,7 +724,10 @@ int slitdec_ox(     int ncols,
        sP        : in: initial guess (ncols). out: detector-pixel spectrum
        sP_fine   : out: fine spectrum (ncols * osample_x), may be NULL
        info      : at least 5 values; info[5], info[6] are written if
-                   info[4] is passed in as -7 (dropped zeta entries, sP band) */
+                   info[4] is passed in as -7 (dropped zeta entries, sP band)
+       y_lower_lim : rows below the central row of the swath, i.e. the
+                   trace sits at row y_lower_lim + ycen[x] - (int)ycen[x]
+                   (IDL REDUCE convention). < 0 means nrows / 2 (slitdec). */
     int x, xx, y, yy, iy, n, m, nx, ny, nf, j;
     int bx;
     double norm, dev, lambda, diag_tot, ww, tmp;
@@ -731,7 +735,6 @@ int slitdec_ox(     int ncols,
     int iter, delta_x;
     unsigned int isum;
     int *ycen_offset;
-    int y_lower_lim = nrows / 2;
     const int ox = osample_x < 1 ? 1 : osample_x;
     const int want_ext = (info[4] == -7);
     int ndrop = 0;
@@ -752,6 +755,9 @@ int slitdec_ox(     int ncols,
     double *d1col = NULL, *flat_scratch = NULL, *swcol = NULL, *sw2col = NULL;
 
     double success, status;
+
+    if (y_lower_lim < 0 || y_lower_lim >= nrows)
+        y_lower_lim = nrows / 2;
 
     sP_stop = 5e-5;
     success = 1;
@@ -1368,4 +1374,18 @@ int slitdec_ox(     int ncols,
         info[6] = bx;
     }
     return 0;
+}
+
+/* slitdec-compatible entry point: the trace is at row nrows / 2 of the swath. */
+int slitdec_ox(int ncols, int nrows, double *im, double *pix_unc, unsigned char *mask,
+               double *ycen, double *slitcurve, double *slitdeltas, int osample,
+               int osample_x, double mu_x, int sp_order, double lambda_sL, int maxiter,
+               double kappa, int use_preset, int weight_mode, double noise_floor,
+               double *sP, double *sP_fine, double *sL, double *model, double *unc,
+               double *info)
+{
+    return slitdec_ox_ylim(ncols, nrows, im, pix_unc, mask, ycen, slitcurve, slitdeltas,
+                           osample, osample_x, mu_x, sp_order, lambda_sL, maxiter, kappa,
+                           use_preset, weight_mode, noise_floor, sP, sP_fine, sL, model,
+                           unc, info, nrows / 2);
 }

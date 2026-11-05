@@ -37,3 +37,13 @@ int slitdec_ox(     int ncols,
                     double *model,
                     double *unc,
                     double *info);
+
+/* As slitdec_ox, with the row of the trace in the swath given explicitly
+   (IDL REDUCE y_lower_lim; < 0 means nrows / 2). */
+int slitdec_ox_ylim(int ncols, int nrows, double *im, double *pix_unc,
+                    unsigned char *mask, double *ycen, double *slitcurve,
+                    double *slitdeltas, int osample, int osample_x, double mu_x,
+                    int sp_order, double lambda_sL, int maxiter, double kappa,
+                    int use_preset, int weight_mode, double noise_floor,
+                    double *sP, double *sP_fine, double *sL, double *model,
+                    double *unc, double *info, int y_lower_lim);

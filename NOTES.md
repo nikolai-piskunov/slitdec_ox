@@ -59,9 +59,31 @@ with osample and with any tilt difference (~5 m/s-equivalent for c1 ≈ 0.12 at 
 ANDES). slitdec_ox evaluates at the centre (`slitdec_ox_t_offset = 0.5`, a global for
 now). The same one-line fix applies to slitdec.c.
 
+## IDL REDUCE interface (slitdec_ox_idl.c)
+
+`libslitdec_ox_idl.so` (built by `build.sh`) exports `slit_func_2d` with the 25-argument
+CALL_EXTERNAL list of mkslitf.pro, so it replaces `reduce.so` without IDL changes:
+`mkslitf, ..., LIBRARY_NAME='~/Slit_func/slitdec_ox/libslitdec_ox_idl.so'` (or link
+`slitdec_ox.c` + `slitdec_ox_idl.c` into reduce.so instead of `slitdec.c` + `slitdec_idl.c`).
+Optional arguments 25-29 are maxiter, osample_x, mu_x, sp_order, sP_fine; when absent,
+the env vars `SLITDEC_OX_MAXITER/OSAMPLE_X/MU_X/SP_ORDER` apply (`setenv,'SLITDEC_OX_OSAMPLE_X=16'`),
+then the defaults 100 / 8 / 1.64e-4 / 3. `lambda_sP` is ignored (mu_x replaces it);
+kappa = 10, weights `none`, as in ../slitdec_idl.c.
+
+The trace row is now an argument: `slitdec_ox_ylim(..., y_lower_lim)`; mkslitf.pro passes
+an asymmetric value (19 for 40 rows in test.sav) where slitdec_ox() assumes nrows/2.
+
+`test_idl_interface.py [test.sav] [ref.so ...]` emulates CALL_EXTERNAL on the swath that
+mkslitf.pro saved (../test.sav: 412 x 40, osamp 10, shear -0.15 px/row). Result: with
+osample_x = 1, mu_x = 0, t_offset = 0 it matches the current REDUCE library
+(../slitdec.c + ../slitdec_idl.c) to 9e-16 and the original slit_func_2d to 3e-4 rms. The
+default (ox 8) differs from both by 2.9% rms in sP: ~1e-3 in the continuum, up to a few % on
+steep line flanks (sP spans 2.4k-57k there), i.e. the linear-interpolation line bias above.
+
 ## Not done
 
 - Real frames: the ANDES flat/FP in `~/ANDES/E2E/fp_slitAB` are not on this machine.
+- CRIRES+ through IDL REDUCE: interface done and tested in Python only, not yet run inside IDL.
 - Memory: the zeta list holds ≈ (osample+1)(osample_x+1) entries per pixel
   (≈ 90 MB for a 500 × 136 swath at 8/8; the list length is now counted exactly).
 - Speed: no flat fast path for osample_x > 1; 5× (ox 8) to 10× (ox 16) slower than
