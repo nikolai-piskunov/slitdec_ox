@@ -1,0 +1,6 @@
+*.so
+*.o
+*.dylib
+__pycache__/
+*.pyc
+.DS_Store
