@@ -19,7 +19,7 @@ def native(a, dt):
     return np.ascontiguousarray(np.asarray(a), dtype=dt).copy()
 
 
-def call(lib, ox=None, mu=None, order=None, maxiter=100, t_offset=None):
+def call(lib, ox=None, mux=(0.0, 0.0, 1.64e-4), muy=(0.0, 0.0), maxiter=100, t_offset=None):
     L = ct.CDLL(lib)
     if t_offset is not None:
         ct.c_double.in_dll(L, "slitdec_ox_t_offset").value = t_offset
@@ -37,13 +37,14 @@ def call(lib, ox=None, mu=None, order=None, maxiter=100, t_offset=None):
           for k in ("xi", "zeta", "m_zeta", "l_aij", "l_bj", "p_aij", "p_bj")]
     a += [np.array(0, np.int32)]
     if ox is not None:
-        a += [np.array(maxiter, np.int32), np.array(ox, np.int32), np.array(mu, np.float64),
-              np.array(order, np.int32), np.zeros(nc * ox)]
+        a += [np.array(maxiter, np.int32), np.array(ox, np.int32)]
+        a += [np.array(v, np.float64) for v in tuple(mux) + tuple(muy)]
+        a += [np.zeros(nc * ox), np.zeros(11)]
     argv = (ct.c_void_p * len(a))(*[x.ctypes.data for x in a])
     L.slit_func_2d.restype = ct.c_int
     rc = L.slit_func_2d(ct.c_int(len(a)), argv)
     return dict(rc=rc, sp=a[13], sL=a[15], model=a[12], unc=a[16], mask=a[11],
-                sp_fine=a[-1] if ox is not None else None)
+                sp_fine=a[-2] if ox is not None else None, info=a[-1] if ox is not None else None)
 
 
 def report(name, r, ref=None):
@@ -61,13 +62,18 @@ lib = os.path.join(here, "libslitdec_ox_idl.so")
 print(f"{sav}: nc={int(d['nc'])} nysf={int(d['nysf'])} osamp={int(d['osamp'])} "
       f"y_lower_lim={int(d['y_lower_lim'])} shear={np.median(d['psf_curve'][:, 1]):+.4f}")
 r_def = call(lib)
-r8 = call(lib, 8, 1.64e-4, 3)
-r16 = call(lib, 16, 1.64e-4, 3)
-r1 = call(lib, 1, 0.0, 3, t_offset=0.0)
-assert r_def["rc"] == 0 and np.array_equal(r_def["sp"], r8["sp"]), "defaults != (8, 1.64e-4, 3)"
+r8 = call(lib, 8)
+r16 = call(lib, 16)
+r1 = call(lib, 1, (0.0, 0.0, 0.0), t_offset=0.0)
+assert r_def["rc"] == 0 and np.array_equal(r_def["sp"], r8["sp"]), "defaults != explicit defaults"
 assert np.allclose(r8["sp_fine"].reshape(-1, 8).mean(1)[5:-5], r8["sp"][5:-5]), "sP != mean(sP_fine)"
 report("slitdec_ox ox=8 (default)", r8)
 report("slitdec_ox ox=16", r16, r8)
+i = r8["info"]
+print(f"  info: damping x {i[7]:.3g}, resolution x {i[8]:.3f} px; lambda_sf={float(d['lambda_sf'])} "
+      f"= mu1_y {-i[9]:.3g}, resolution y {i[10]:.3f} px")
+ry = call(lib, 8, muy=(-i[9], 0.0))
+report("slitdec_ox ox=8, mu1_y = that", ry, r8)
 report("slitdec_ox ox=1 mu=0 t_offset=0", r1, r8)
 for ref in refs:
     rr = call(ref)

@@ -65,13 +65,18 @@ now). The same one-line fix applies to slitdec.c.
 CALL_EXTERNAL list of mkslitf.pro, so it replaces `reduce.so` without IDL changes:
 `mkslitf, ..., LIBRARY_NAME='~/Slit_func/slitdec_ox/libslitdec_ox_idl.so'` (or link
 `slitdec_ox.c` + `slitdec_ox_idl.c` into reduce.so instead of `slitdec.c` + `slitdec_idl.c`).
-Optional arguments 25-29 are maxiter, osample_x, mu_x, sp_order, sP_fine; when absent,
-the env vars `SLITDEC_OX_MAXITER/OSAMPLE_X/MU_X/SP_ORDER` apply (`setenv,'SLITDEC_OX_OSAMPLE_X=16'`),
-then the defaults 100 / 8 / 1.64e-4 / 3. `lambda_sP` is ignored (mu_x replaces it);
-kappa = 10, weights `none`, as in ../slitdec_idl.c.
+Optional arguments 25-33 are maxiter, osample_x, mu1_x, mu2_x, mu3_x, mu1_y, mu2_y (all
+scalars), sP_fine (out) and info (out, dblarr(11)); when absent, the env vars
+`SLITDEC_OX_MAXITER/OSAMPLE_X/MU1_X/MU2_X/MU3_X/MU1_Y/MU2_Y` apply
+(`setenv,'SLITDEC_OX_OSAMPLE_X=16'`), then the defaults 100 / 8 / 0 / 0 / 1.64e-4 / 0 / 0.
+mu1_y = mu2_y = 0 means REDUCE's `lambda_sf` as before. `lambda_sP` is ignored (mu_x
+replaces it); kappa = 10, weights `none`, as in ../slitdec_idl.c.
 
-The trace row is now an argument: `slitdec_ox_ylim(..., y_lower_lim)`; mkslitf.pro passes
-an asymmetric value (19 for 40 rows in test.sav) where slitdec_ox() assumes nrows/2.
+The trace row is an argument of the general entry point `slitdec_ox2(..., y_lower_lim)`;
+mkslitf.pro passes asymmetric values (19 for 40 rows in test.sav, any split for
+two-fibre slits) where slitdec_ox() assumes nrows/2. Asymmetric cuts of test.sav
+(0-19 rows below, 0-20 above) match the REDUCE library to <= 6e-6 at osample_x = 1,
+clean under AddressSanitizer.
 
 `test_idl_interface.py [test.sav] [ref.so ...]` emulates CALL_EXTERNAL on the swath that
 mkslitf.pro saved (../test.sav: 412 x 40, osamp 10, shear -0.15 px/row). Result: with
@@ -79,6 +84,41 @@ osample_x = 1, mu_x = 0, t_offset = 0 it matches the current REDUCE library
 (../slitdec.c + ../slitdec_idl.c) to 9e-16 and the original slit_func_2d to 3e-4 rms. The
 default (ox 8) differs from both by 2.9% rms in sP: ~1e-3 in the continuum, up to a few % on
 steep line flanks (sP spans 2.4k-57k there), i.e. the linear-interpolation line bias above.
+
+## Penalties: mu_k in x and y (penalty_design.py, sl_penalty_study.py)
+
+`slitdec_ox2` takes `mu_x[k-1]`, `mu_y[k-1]` (k = 1..15): penalty
+sum_k mu_k F ∫ (d^k s)^2 in physical units, i.e. the filter 1/(1 + sum_k mu_k nu^2k),
+nu in rad/px, independent of osample, osample_x, flux, weights (F = median diagonal
+x os^2; coefficient on k-th differences mu_k · diag_med · os^(2k+1)). No mu_y: the
+legacy lambda_sL (mean diagonal, 1st differences of subpixels). `slitdec_ox()` keeps
+its (mu_x, sp_order, lambda_sL) API. info[4] = -11 on input returns in info[7..10]
+the damping ratio ζ = mu1/(2√mu2) and nominal resolution π/ν½ [px] for x and y.
+ζ ≥ 1: the penalty kernel is a convolution of two exponentials, so it cannot ring.
+For the legacy lambda_sL, info[9] = −(equivalent mu1_y): REDUCE's lambda_sf = 2 at
+osamp 10 is mu1_y = 1.9e-3, resolution 0.14 px, i.e. hardly any smoothing.
+
+**x (penalty_design.py):** at the strength that whitens the noise (var/mean = 1),
+all shapes (k = 1, 2, 3, critically damped 1+2) give the extracted pixel spectrum
+the same ~2-2.5 % negative kernel lobes: in x the ringing comes from the pixel
+band limit, not the penalty. k = 3 has the flattest transfer (0.997 at π/2 vs
+0.956 for k = 1) and stays the default: mu3_x = 1.64e-4.
+
+**y (sl_penalty_study.py, C code, 40 x 200 synthetic swaths, osample 10):**
+penalties compared at equal nominal resolution r.
+- Edges blurred to ~1 px (realistic): no penalty rings (≤ 0.5 %).
+- Edges sharper than a pixel (0.25 px): every penalty rings with ~1 px period,
+  4 % with good phase coverage, 10 % with none (|c1| = 1); the cause is information
+  the pixels never recorded, and only smoothing (larger r) reduces it.
+- Pure k = 2 is worse in both respects: still rings 4-7 % at r = 1 px where
+  k = 1 drops to 0.4-3 %, and amplifies noise 2.5x at small r. This matches
+  REDUCE experience that the 1st-derivative term must be kept.
+- Critically damped 1+2 ≈ k = 1 within a few %: no measurable gain from mu2_y.
+- Realistic 1 px edges: r = 0.3 px (mu1_y = (0.3/π)^2 = 9e-3) keeps the edge width of
+  legacy (r ≈ 0.1-0.14) with 1.6x lower noise; r = 0.6 widens edges by 0.2 px.
+So use k = 1 in y; mu1_y ≈ 1e-2 is a reasonable start. Not default yet (IDL keeps
+lambda_sf). Choosing r per swath from the data (GCV or discrepancy principle) is the
+objective next step.
 
 ## Not done
 

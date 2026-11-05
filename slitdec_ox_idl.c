@@ -17,7 +17,8 @@
  *   7  PSF_curve   double [3,ncols]       slit curvature: shift = c1*dy + c2*dy^2
  *   8  delta_x     long   scalar          unused (computed internally)
  *   9  lambda_sP   double scalar          unused: the spectrum penalty is mu_x
- *  10  lambda_sL   double scalar          slit-function smoothing
+ *  10  lambda_sL   double scalar          slit-function smoothing (legacy, used
+ *                                         unless mu1_y or mu2_y is set)
  *  11  mask        byte   [ncols,nrows]   in/out, 0 = bad (updated by kappa clip)
  *  12  model       double [ncols,nrows]   OUTPUT model swath
  *  13  sP          double [ncols]         OUTPUT detector-pixel spectrum
@@ -29,15 +30,24 @@
  * Optional (each needs the preceding ones):
  *  25  maxiter     long   scalar          default 100
  *  26  osample_x   long   scalar          fine spectrum bins per column, default 8
- *  27  mu_x        double scalar          spectrum penalty, default 1.64e-4
- *  28  sp_order    long   scalar          order of the difference penalty, default 3
- *  29  sP_fine     double [ncols*osample_x] OUTPUT fine spectrum
+ *  27  mu1_x       double scalar          spectrum penalties on the 1st, 2nd and
+ *  28  mu2_x       double scalar            3rd derivative (physical units, see
+ *  29  mu3_x       double scalar            NOTES.md); defaults below
+ *  30  mu1_y       double scalar          slit-function penalties on the 1st and
+ *  31  mu2_y       double scalar            2nd derivative; both 0: lambda_sL
+ *  32  sP_fine     double [ncols*osample_x] OUTPUT fine spectrum
+ *  33  info        double [11]            OUTPUT: success, sP change, status,
+ *                                         iterations, delta_x, dropped zeta,
+ *                                         sP band, damping x, resolution x [px],
+ *                                         damping y, resolution y [px] (damping
+ *                                         < 1 can ring; legacy lambda_sL gives
+ *                                         -mu1_y equivalent as damping y)
  *
- * When an optional argument is not passed, the environment variables
- * SLITDEC_OX_MAXITER, SLITDEC_OX_OSAMPLE_X, SLITDEC_OX_MU_X and SLITDEC_OX_SP_ORDER
- * override the defaults, so mkslitf.pro can be steered without editing it, e.g.
+ * When an optional argument is not passed, the environment variable
+ * SLITDEC_OX_<NAME> (SLITDEC_OX_MAXITER, _OSAMPLE_X, _MU1_X, _MU2_X, _MU3_X, _MU1_Y,
+ * _MU2_Y) overrides the default, so mkslitf.pro can be steered without editing it:
  *   IDL> setenv, 'SLITDEC_OX_OSAMPLE_X=16'
- * osample_x = 1 with mu_x = 0 is the historic slitdec model (apart from the
+ * osample_x = 1 with all mu_x = 0 is the historic slitdec model (apart from the
  * curvature being evaluated at the y-subpixel centre, see NOTES.md).
  *
  * Memory layout: IDL [ncols,nrows] is column-major, i.e. C [nrows][ncols], so the
@@ -48,6 +58,11 @@
 #include <stdlib.h>
 #include <math.h>
 #include "slitdec_ox.h"
+
+/* Default spectrum penalty (see NOTES.md) */
+#define SLITDEC_OX_MU1_X 0.0
+#define SLITDEC_OX_MU2_X 0.0
+#define SLITDEC_OX_MU3_X 1.64e-4
 
 #ifdef BUILDING_REDUCE_WIN_DLL
 #define REDUCE_DLL __declspec(dllexport)
@@ -68,20 +83,21 @@ static double env_or(const char *name, double dflt)
 
 int REDUCE_DLL slit_func_2d(int argc, void *argv[])
 {
-    int ncols, nrows, osample, y_lower_lim, sL_preset, maxiter, osample_x, sp_order;
-    double lambda_sL, mu_x;
-    double *im, *PSF_curve, *sP, *sL, *unc, *model, *ycen_frac, *sP_fine = NULL;
+    int ncols, nrows, osample, y_lower_lim, sL_preset, maxiter, osample_x;
+    double lambda_sL, mu_x[3], mu_y[2];
+    double *im, *PSF_curve, *sP, *sL, *unc, *model, *ycen_frac, *sP_fine = NULL, *info_out = NULL;
     int *ycen_offset;
     unsigned char *mask;
     int x, y, ny, ret;
-    double info[7] = {0};
+    double info[11] = {0};
 
     if (argc < 25)
     {
         printf("slit_func_2d (slitdec_ox): requires at least 25 arguments, got %d\n", argc);
         printf("  ncols, nrows, osample, im, ycen_frac, ycen_offset, y_lower_lim, PSF_curve,\n");
         printf("  delta_x, lambda_sP, lambda_sL, mask, model, sP, sP_old, sL, unc,\n");
-        printf("  7 x scratch, sL_preset [, maxiter, osample_x, mu_x, sp_order, sP_fine]\n");
+        printf("  7 x scratch, sL_preset [, maxiter, osample_x, mu1_x, mu2_x, mu3_x,\n");
+        printf("  mu1_y, mu2_y, sP_fine, info]\n");
         return -1;
     }
 
@@ -103,10 +119,16 @@ int REDUCE_DLL slit_func_2d(int argc, void *argv[])
 
     maxiter   = argc > 25 ? *(int *)argv[25]    : (int)env_or("SLITDEC_OX_MAXITER", 100);
     osample_x = argc > 26 ? *(int *)argv[26]    : (int)env_or("SLITDEC_OX_OSAMPLE_X", 8);
-    mu_x      = argc > 27 ? *(double *)argv[27] : env_or("SLITDEC_OX_MU_X", 1.64e-4);
-    sp_order  = argc > 28 ? *(int *)argv[28]    : (int)env_or("SLITDEC_OX_SP_ORDER", 3);
-    if (argc > 29)
-        sP_fine = (double *)argv[29];
+    mu_x[0]   = argc > 27 ? *(double *)argv[27] : env_or("SLITDEC_OX_MU1_X", SLITDEC_OX_MU1_X);
+    mu_x[1]   = argc > 28 ? *(double *)argv[28] : env_or("SLITDEC_OX_MU2_X", SLITDEC_OX_MU2_X);
+    mu_x[2]   = argc > 29 ? *(double *)argv[29] : env_or("SLITDEC_OX_MU3_X", SLITDEC_OX_MU3_X);
+    mu_y[0]   = argc > 30 ? *(double *)argv[30] : env_or("SLITDEC_OX_MU1_Y", 0.0);
+    mu_y[1]   = argc > 31 ? *(double *)argv[31] : env_or("SLITDEC_OX_MU2_Y", 0.0);
+    if (argc > 32)
+        sP_fine = (double *)argv[32];
+    if (argc > 33)
+        info_out = (double *)argv[33];
+    info[4] = -11; /* ask for the extended info */
 
     if (lambda_sL <= 0.0)
         lambda_sL = 1.0;
@@ -149,13 +171,17 @@ int REDUCE_DLL slit_func_2d(int argc, void *argv[])
         sP[x] = norm > 0.0 ? sP[x] / norm : -1000.0;
     }
 
-    ret = slitdec_ox_ylim(ncols, nrows, im, pix_unc, mask, ycen, slitcurve, slitdeltas,
-                          osample, osample_x, mu_x, sp_order, lambda_sL, maxiter,
+    ret = slitdec_ox2(ncols, nrows, im, pix_unc, mask, ycen, slitcurve, slitdeltas,
+                          osample, osample_x, mu_x, 3, mu_y, 2, lambda_sL, maxiter,
                           10.0,      /* kappa: 10-sigma outlier rejection */
                           sL_preset, /* use_preset */
                           0,         /* weight_mode: none */
                           -1.0,      /* noise_floor: unused */
                           sP, sP_fine, sL, model, unc, info, y_lower_lim);
+
+    if (info_out != NULL)
+        for (x = 0; x < 11; x++)
+            info_out[x] = info[x];
 
     free(ycen);
     free(slitcurve);

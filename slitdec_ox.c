@@ -9,13 +9,16 @@
      slit curvature, contributes to a detector pixel with the overlap of each
      shifted fine bin with that pixel (box integration). osample_x = 1 is the
      historic two-column linear weighting.
-   - The spectrum penalty is a k-th difference (k = sp_order) in physical units:
-         mu_x * F * integral (d^k sP / dx^k)^2 dx,   x in detector pixels,
-     with F the median data curvature per pixel of the sP system. This makes mu_x
-     independent of osample_x, flux and weighting. For k = 3, mu_x = 1.64e-4
-     whitens the extraction noise for any tilt (continuum model; see
-     ox_geometry.py). mu_x = 0 with osample_x > 1 leaves sub-pixel structure
-     unconstrained where the tilt does not sample it: use mu_x > 0.
+   - The penalties are sums of k-th differences in physical units:
+         sum_k mu_x[k-1] * F * integral (d^k sP / dx^k)^2 dx,   x in detector pixels,
+     with F the median data curvature per pixel of the sP system, and the same in y
+     for the slit function (mu_y; none given: slitdec's lambda_sL). The filter is
+     then 1 / (1 + sum_k mu_k nu^2k) whatever osample, osample_x, flux and weights.
+     mu1 and mu2 together cannot ring if mu1 >= 2 sqrt(mu2). For x, mu3 = 1.64e-4
+     alone whitens the extraction noise for any tilt (continuum model; see
+     ox_geometry.py, penalty_design.py); in y, k = 1 is best (sl_penalty_study.py).
+     No x penalty with osample_x > 1 leaves sub-pixel structure unconstrained where
+     the tilt does not sample it.
    - sP (out, ncols) is the detector-pixel spectrum: the mean of the fine bins of
      each column, i.e. what a vertical slit would record. sP_fine (out, may be
      NULL) receives the fine solution.
@@ -691,7 +694,61 @@ static int cmp_double(const void *p, const void *q)
     return (a > b) - (a < b);
 }
 
-int slitdec_ox_ylim(int ncols,
+/* Median of the positive entries v[0], v[stride], ... v[(n-1)*stride] (0 if none) */
+static double median_positive(const double *v, int n, int stride)
+{
+    double *dg = malloc(n * sizeof(double)), med = 0.e0;
+    int i, nd = 0;
+    for (i = 0; i < n; i++)
+        if (v[(size_t)i * stride] > 0.e0)
+            dg[nd++] = v[(size_t)i * stride];
+    if (nd > 0)
+    {
+        qsort(dg, nd, sizeof(double), cmp_double);
+        med = dg[nd / 2];
+    }
+    free(dg);
+    return med;
+}
+
+/* Damping ratio mu1 / (2 sqrt(mu2)) of a penalty mu[k-1], k = 1..kmax */
+static double penalty_damping(const double *mu, int kmax)
+{
+    const double m1 = kmax >= 1 ? mu[0] : 0.e0, m2 = kmax >= 2 ? mu[1] : 0.e0;
+    if (m2 > 0.e0)
+        return m1 / (2.e0 * sqrt(m2));
+    return m1 > 0.e0 ? INFINITY : 0.e0;
+}
+
+/* Nominal resolution pi / nu_half [px], 1 + sum mu_k nu_half^2k = 2 (0: no penalty) */
+static double penalty_resolution(const double *mu, int kmax)
+{
+    double lo = 0.e0, hi = 1.e0, f;
+    int i, k;
+    if (kmax < 1)
+        return 0.e0;
+    for (i = 0; i < 200; i++)
+    {
+        for (f = 0.e0, k = 1; k <= kmax; k++)
+            f += mu[k - 1] * pow(hi, 2 * k);
+        if (f >= 1.e0)
+            break;
+        hi *= 2.e0;
+    }
+    for (i = 0; i < 100; i++)
+    {
+        const double mid = 0.5 * (lo + hi);
+        for (f = 0.e0, k = 1; k <= kmax; k++)
+            f += mu[k - 1] * pow(mid, 2 * k);
+        if (f < 1.e0)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return M_PI / (0.5 * (lo + hi));
+}
+
+int slitdec_ox2(    int ncols,
                     int nrows,
                     double *im,
                     double *pix_unc,
@@ -701,8 +758,10 @@ int slitdec_ox_ylim(int ncols,
                     double *slitdeltas,
                     int osample,
                     int osample_x,
-                    double mu_x,
-                    int sp_order,
+                    const double *mu_x,
+                    int nk_x,
+                    const double *mu_y,
+                    int nk_y,
                     double lambda_sL,
                     int maxiter,
                     double kappa,
@@ -719,12 +778,22 @@ int slitdec_ox_ylim(int ncols,
 {
     /* Parameters as slitdec() except:
        osample_x : fine spectrum bins per detector column (>= 1)
-       mu_x      : spectrum penalty in physical units (see header comment)
-       sp_order  : order k of the difference penalty (1..15), 3 recommended
+       mu_x[k-1] : spectrum penalty on the k-th derivative, k = 1..nk_x, in
+                   physical units (see header comment); nk_x <= SLITDEC_OX_KMAX
+       mu_y[k-1] : the same for the slit function, k = 1..nk_y. All zero (or
+                   nk_y = 0): the slitdec penalty lambda_sL on first differences
+                   of the y-subpixels, scaled by the mean diagonal (legacy)
        sP        : in: initial guess (ncols). out: detector-pixel spectrum
        sP_fine   : out: fine spectrum (ncols * osample_x), may be NULL
        info      : at least 5 values; info[5], info[6] are written if
-                   info[4] is passed in as -7 (dropped zeta entries, sP band)
+                   info[4] is passed in as -7 (dropped zeta entries, sP band),
+                   info[5..10] if it is passed in as -11: info[7], info[9] are
+                   the damping ratio mu1/(2 sqrt(mu2)) in x and y (>= 1: the
+                   penalty cannot ring), info[8], info[10] the nominal
+                   resolution pi/nu_half [px] in x and y, nu_half being where
+                   the penalty transfer 1/(1 + sum mu_k nu^2k) drops to 1/2. For
+                   the legacy lambda_sL, info[9..10] use the equivalent mu1_y
+                   (returned in info[9] as -mu1_y, since its damping is infinite).
        y_lower_lim : rows below the central row of the swath, i.e. the
                    trace sits at row y_lower_lim + ycen[x] - (int)ycen[x]
                    (IDL REDUCE convention). < 0 means nrows / 2 (slitdec). */
@@ -736,7 +805,11 @@ int slitdec_ox_ylim(int ncols,
     unsigned int isum;
     int *ycen_offset;
     const int ox = osample_x < 1 ? 1 : osample_x;
-    const int want_ext = (info[4] == -7);
+    const int want_ext = (info[4] == -7 || info[4] == -11);
+    const int want_ext2 = (info[4] == -11);
+    double mux[SLITDEC_OX_KMAX], muy[SLITDEC_OX_KMAX];
+    int kx = 0, ky = 0; /* highest order with a non-zero penalty */
+    double mu1_y_legacy = 0.e0;
     int ndrop = 0;
 
     double *l_Aij, *l_bj, *p_Aij = NULL, *p_bj, *sPf;
@@ -765,10 +838,17 @@ int slitdec_ox_ylim(int ncols,
     sP_change = INFINITY;
     ny = osample * (nrows + 1) + 1;
     nf = ncols * ox;
-    if (sp_order < 1) sp_order = 1;
-    if (sp_order > 15) sp_order = 15;
+    for (m = 0; m < SLITDEC_OX_KMAX; m++)
+    {
+        mux[m] = (m < nk_x && mu_x != NULL && mu_x[m] > 0.e0) ? mu_x[m] : 0.e0;
+        muy[m] = (m < nk_y && mu_y != NULL && mu_y[m] > 0.e0) ? mu_y[m] : 0.e0;
+        if (mux[m] > 0.e0) kx = m + 1;
+        if (muy[m] > 0.e0) ky = m + 1;
+    }
+    if (ky > 2 * osample) /* the sL band holds differences up to 2 * osample */
+        ky = 2 * osample;
 
-    delta_x = mu_x == 0 ? 0 : 1;
+    delta_x = kx == 0 ? 0 : 1;
     for (x = 0; x < ncols; x++)
     {
         if (slitcurve[curve_index(x, 1)] == 0.e0 && slitcurve[curve_index(x, 2)] == 0.e0 &&
@@ -927,7 +1007,7 @@ int slitdec_ox_ylim(int ncols,
                     if (zr->max_x - zr->min_x > span)
                         span = zr->max_x - zr->min_x;
                 }
-        bx = (mu_x > 0.e0 && span < sp_order) ? sp_order : span;
+        bx = (kx > 0 && span < kx) ? kx : span;
         if (ox > 1 && bx < 1)
             bx = 1;
         nx = 2 * bx + 1;
@@ -1036,7 +1116,20 @@ int slitdec_ox_ylim(int ncols,
             diag_tot = 0.e0;
             for (iy = 0; iy < ny; iy++)
                 diag_tot += l_Aij[laij_index(iy, 2 * osample)];
-            lambda = lambda_sL * diag_tot / ny;
+            if (ky > 0 || want_ext2)
+            {
+                /* Penalty sum_k mu_y[k-1] * F * int (d^k sL/dy^k)^2 dy, as for sP:
+                   coefficient mu * diag_med * osample^(2k+1) on k-th differences */
+                double diag_med = median_positive(l_Aij + 2 * osample, ny, 4 * osample + 1);
+                for (m = 1; m <= ky; m++)
+                    add_difference_penalty(l_Aij, ny, 4 * osample + 1, 2 * osample, m,
+                                           muy[m - 1] * diag_med * pow((double)osample, 2 * m + 1));
+                if (ky == 0 && diag_med > 0.e0)
+                    mu1_y_legacy = lambda_sL * diag_tot / ny / (diag_med * pow((double)osample, 3));
+            }
+            lambda = ky > 0 ? 0.e0 : lambda_sL * diag_tot / ny;
+            if (lambda > 0.e0)
+            {
             l_Aij[laij_index(0, 2 * osample)] += lambda;
             l_Aij[laij_index(0, 2 * osample + 1)] -= lambda;
             for (iy = 1; iy < ny - 1; iy++)
@@ -1047,6 +1140,7 @@ int slitdec_ox_ylim(int ncols,
             }
             l_Aij[laij_index(ny - 1, 2 * osample - 1)] -= lambda;
             l_Aij[laij_index(ny - 1, 2 * osample)] += lambda;
+            }
 #if REGULARIZE_DIAGONAL
             {
                 double max_diag = 0.0;
@@ -1124,23 +1218,12 @@ int slitdec_ox_ylim(int ncols,
            h = 1/ox the data curvature of one bin is F h^2, so F = median
            diagonal * ox^2, and the discrete form of the integral is
            h^(1-2k) * sum (D_k sPf)^2: coefficient mu_x * diag_med * ox^(2k+1). */
-        if (mu_x > 0.e0 || ox > 1)
+        if (kx > 0 || ox > 1)
         {
-            double *dg = malloc(nf * sizeof(double));
-            int nd = 0;
-            for (j = 0; j < nf; j++)
-                if (p_Aij[paij_index(j, bx)] > 0.e0)
-                    dg[nd++] = p_Aij[paij_index(j, bx)];
-            double diag_med = 0.e0;
-            if (nd > 0)
-            {
-                qsort(dg, nd, sizeof(double), cmp_double);
-                diag_med = dg[nd / 2];
-            }
-            free(dg);
-            if (mu_x > 0.e0)
-                add_difference_penalty(p_Aij, nf, nx, bx, sp_order,
-                                       mu_x * diag_med * pow((double)ox, 2 * sp_order + 1));
+            double diag_med = median_positive(p_Aij + bx, nf, nx);
+            for (m = 1; m <= kx; m++)
+                add_difference_penalty(p_Aij, nf, nx, bx, m,
+                                       mux[m - 1] * diag_med * pow((double)ox, 2 * m + 1));
             if (ox > 1) /* tiny ridge: keeps unsampled sub-pixel modes finite */
                 for (j = 0; j < nf; j++)
                     p_Aij[paij_index(j, bx)] += 1.e-9 * diag_med;
@@ -1373,10 +1456,27 @@ int slitdec_ox_ylim(int ncols,
         info[5] = ndrop;
         info[6] = bx;
     }
+    if (want_ext2)
+    {
+        info[7] = penalty_damping(mux, kx);
+        info[8] = penalty_resolution(mux, kx);
+        if (ky > 0)
+        {
+            info[9] = penalty_damping(muy, ky);
+            info[10] = penalty_resolution(muy, ky);
+        }
+        else
+        {
+            info[9] = -mu1_y_legacy;
+            info[10] = penalty_resolution(&mu1_y_legacy, mu1_y_legacy > 0.e0);
+        }
+    }
     return 0;
 }
 
-/* slitdec-compatible entry point: the trace is at row nrows / 2 of the swath. */
+/* slitdec-compatible entry point: the trace is at row nrows / 2 of the swath,
+   the spectrum penalty is mu_x on the sp_order-th derivative only and the slit
+   function penalty is slitdec's lambda_sL. */
 int slitdec_ox(int ncols, int nrows, double *im, double *pix_unc, unsigned char *mask,
                double *ycen, double *slitcurve, double *slitdeltas, int osample,
                int osample_x, double mu_x, int sp_order, double lambda_sL, int maxiter,
@@ -1384,8 +1484,12 @@ int slitdec_ox(int ncols, int nrows, double *im, double *pix_unc, unsigned char 
                double *sP, double *sP_fine, double *sL, double *model, double *unc,
                double *info)
 {
-    return slitdec_ox_ylim(ncols, nrows, im, pix_unc, mask, ycen, slitcurve, slitdeltas,
-                           osample, osample_x, mu_x, sp_order, lambda_sL, maxiter, kappa,
-                           use_preset, weight_mode, noise_floor, sP, sP_fine, sL, model,
-                           unc, info, nrows / 2);
+    double mu[SLITDEC_OX_KMAX] = {0};
+    if (sp_order < 1) sp_order = 1;
+    if (sp_order > SLITDEC_OX_KMAX) sp_order = SLITDEC_OX_KMAX;
+    mu[sp_order - 1] = mu_x;
+    return slitdec_ox2(ncols, nrows, im, pix_unc, mask, ycen, slitcurve, slitdeltas,
+                       osample, osample_x, mu, sp_order, NULL, 0, lambda_sL, maxiter, kappa,
+                       use_preset, weight_mode, noise_floor, sP, sP_fine, sL, model,
+                       unc, info, nrows / 2);
 }
