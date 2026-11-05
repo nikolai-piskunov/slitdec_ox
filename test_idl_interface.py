@@ -21,8 +21,11 @@ def native(a, dt):
 
 def call(lib, ox=None, mux=(0.0, 0.0, 1.64e-4), muy=(0.0, 0.0), maxiter=100, t_offset=None):
     L = ct.CDLL(lib)
-    if t_offset is not None:
-        ct.c_double.in_dll(L, "slitdec_ox_t_offset").value = t_offset
+    # the IDL wrapper reads the tilt reference point from the environment on every call
+    if t_offset is None:
+        os.environ.pop("SLITDEC_OX_T_OFFSET", None)
+    else:
+        os.environ["SLITDEC_OX_T_OFFSET"] = repr(t_offset)
     nc, nysf, osamp = int(d["nc"]), int(d["nysf"]), int(d["osamp"])
     ny = (nysf + 1) * osamp + 1
     a = [np.array(nc, np.int32), np.array(nysf, np.int32), np.array(osamp, np.int32),

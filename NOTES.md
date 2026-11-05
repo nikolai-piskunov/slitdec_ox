@@ -85,6 +85,14 @@ osample_x = 1, mu_x = 0, t_offset = 0 it matches the current REDUCE library
 default (ox 8) differs from both by 2.9% rms in sP: ~1e-3 in the continuum, up to a few % on
 steep line flanks (sP spans 2.4k-57k there), i.e. the linear-interpolation line bias above.
 
+**Tested in IDL 9.3** (`idl_test_ox.pro`, `idl -e "idl_test_ox"`): the 25-argument mkslitf.pro
+call on ../test.sav works with libslitdec_ox_idl.so. With `SLITDEC_OX_OSAMPLE_X=1`,
+`SLITDEC_OX_MU3_X=0` and `SLITDEC_OX_T_OFFSET=0` (testing only: slitdec.c's tilt
+reference point) it reproduces the installed reduce.so.darwin.arm64.64 (and .new) to
+|dsP| 1e-10, |dsL| 3e-16, identical mask. Optional arguments, info and sP_fine come back
+(mean of sP_fine = sP exactly). The legacy lambda_sf = 2 and its reported equivalent
+mu1_y = 1.93e-3 give the same sP to 1e-12; mu1_y = 1e-2 changes sP by 2e-5 rms.
+
 ## Penalties: mu_k in x and y (penalty_design.py, sl_penalty_study.py)
 
 `slitdec_ox2` takes `mu_x[k-1]`, `mu_y[k-1]` (k = 1..15): penalty
@@ -123,7 +131,7 @@ objective next step.
 ## Not done
 
 - Real frames: the ANDES flat/FP in `~/ANDES/E2E/fp_slitAB` are not on this machine.
-- CRIRES+ through IDL REDUCE: interface done and tested in Python only, not yet run inside IDL.
+- CRIRES+ through IDL REDUCE: tested in IDL on one saved swath (test.sav); full mkslitf runs on CRIRES+ frames not done.
 - Memory: the zeta list holds ≈ (osample+1)(osample_x+1) entries per pixel
   (≈ 90 MB for a 500 × 136 swath at 8/8; the list length is now counted exactly).
 - Speed: no flat fast path for osample_x > 1; 5× (ox 8) to 10× (ox 16) slower than

@@ -45,7 +45,8 @@
  *
  * When an optional argument is not passed, the environment variable
  * SLITDEC_OX_<NAME> (SLITDEC_OX_MAXITER, _OSAMPLE_X, _MU1_X, _MU2_X, _MU3_X, _MU1_Y,
- * _MU2_Y) overrides the default, so mkslitf.pro can be steered without editing it:
+ * _MU2_Y, and for testing _T_OFFSET) overrides the default, so mkslitf.pro can be
+ * steered without editing it:
  *   IDL> setenv, 'SLITDEC_OX_OSAMPLE_X=16'
  * osample_x = 1 with all mu_x = 0 is the historic slitdec model (apart from the
  * curvature being evaluated at the y-subpixel centre, see NOTES.md).
@@ -58,6 +59,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include "slitdec_ox.h"
+
+extern double slitdec_ox_t_offset;
 
 /* Default spectrum penalty (see NOTES.md) */
 #define SLITDEC_OX_MU1_X 0.0
@@ -124,6 +127,9 @@ int REDUCE_DLL slit_func_2d(int argc, void *argv[])
     mu_x[2]   = argc > 29 ? *(double *)argv[29] : env_or("SLITDEC_OX_MU3_X", SLITDEC_OX_MU3_X);
     mu_y[0]   = argc > 30 ? *(double *)argv[30] : env_or("SLITDEC_OX_MU1_Y", 0.0);
     mu_y[1]   = argc > 31 ? *(double *)argv[31] : env_or("SLITDEC_OX_MU2_Y", 0.0);
+    /* Testing: where along a y-subpixel the tilt is evaluated (0.5 = centre,
+       0 = slitdec.c, see NOTES.md); only via the environment.             */
+    slitdec_ox_t_offset = env_or("SLITDEC_OX_T_OFFSET", 0.5);
     if (argc > 32)
         sP_fine = (double *)argv[32];
     if (argc > 33)
