@@ -1,55 +1,47 @@
 /*
  * IDL CALL_EXTERNAL interface for slitdec_ox (REDUCE).
  *
- * Entry point: slit_func_2d, a drop-in replacement for slit_func_2d in
- * slit_func_2d_xi_zeta_bd_reduce.c and in ../slitdec_idl.c: mkslitf.pro calls it
- * unchanged (pass LIBRARY_NAME= the library built by build.sh, or link this file
- * into reduce.so instead of slitdec_idl.c).
+ * Entry point: slit_func_ox. Every parameter is an argument: there are no
+ * defaults and nothing is read from the environment, so a call shows exactly
+ * which values were used. All 24 arguments are required; IDL long = C int.
  *
- * Arguments (25 required, as mkslitf.pro passes them; IDL long = C int):
- *   0  ncols       long   scalar          swath width in pixels
- *   1  nrows       long   scalar          swath height in pixels
- *   2  osample     long   scalar          y oversampling of the slit function
- *   3  im          double [ncols,nrows]   swath image
- *   4  ycen        double [ncols]         fractional trace position (0 <= v < 1)
- *   5  ycen_offset long   [ncols]         integer part of the trace position
- *   6  y_lower_lim long   scalar          rows below the trace row in the swath
- *   7  PSF_curve   double [3,ncols]       slit curvature: shift = c1*dy + c2*dy^2
- *   8  delta_x     long   scalar          unused (computed internally)
- *   9  lambda_sP   double scalar          unused: the spectrum penalty is mu_x
- *  10  lambda_sL   double scalar          slit-function smoothing (legacy, used
- *                                         unless mu1_y or mu2_y is set)
- *  11  mask        byte   [ncols,nrows]   in/out, 0 = bad (updated by kappa clip)
- *  12  model       double [ncols,nrows]   OUTPUT model swath
- *  13  sP          double [ncols]         OUTPUT detector-pixel spectrum
- *  14  sP_old      double [ncols]         unused
- *  15  sL          double [ny]            in/out slit function, ny = (nrows+1)*osample+1
- *  16  unc         double [ncols]         OUTPUT spectrum uncertainty
- *  17-23                                  unused scratch arrays
- *  24  sL_preset   long   scalar          non-zero: sL is given and held fixed
- * Optional (each needs the preceding ones):
- *  25  maxiter     long   scalar          default 100
- *  26  osample_x   long   scalar          fine spectrum bins per column, default 8
- *  27  mu1_x       double scalar          spectrum penalties on the 1st, 2nd and
- *  28  mu2_x       double scalar            3rd derivative (physical units, see
- *  29  mu3_x       double scalar            NOTES.md); defaults below
- *  30  mu1_y       double scalar          slit-function penalties on the 1st and
- *  31  mu2_y       double scalar            2nd derivative; both 0: lambda_sL
- *  32  sP_fine     double [ncols*osample_x] OUTPUT fine spectrum
- *  33  info        double [11]            OUTPUT: success, sP change, status,
- *                                         iterations, delta_x, dropped zeta,
- *                                         sP band, damping x, resolution x [px],
- *                                         damping y, resolution y [px] (damping
- *                                         < 1 can ring; legacy lambda_sL gives
- *                                         -mu1_y equivalent as damping y)
+ *   0  ncols       long   scalar            swath width in pixels
+ *   1  nrows       long   scalar            swath height in pixels
+ *   2  osample     long   scalar            subpixels per pixel of the slit function (y)
+ *   3  osample_x   long   scalar            fine spectrum bins per pixel (x), >= 1
+ *   4  im          double [ncols,nrows]     swath image
+ *   5  ycen_frac   double [ncols]           fractional trace position, 0 <= v < 1
+ *   6  ycen_offset long   [ncols]           integer part of the trace position
+ *   7  y_lower_lim long   scalar            rows below the trace row in the swath
+ *   8  PSF_curve   double [3,ncols]         slit curvature: shift = c1*dy + c2*dy^2
+ *                                           (element 0 unused)
+ *   9  mu1_x       double scalar            spectrum penalties on the 1st, 2nd and 3rd
+ *  10  mu2_x       double scalar              derivative, in physical units: the
+ *  11  mu3_x       double scalar              spectrum is filtered by
+ *                                             1/(1 + sum_k mu_k nu^2k), nu in rad/pixel
+ *  12  mu1_y       double scalar            slit-function penalties on the 1st and 2nd
+ *  13  mu2_y       double scalar              derivative, same units; at least one > 0
+ *  14  maxiter     long   scalar            maximum number of iterations, >= 1
+ *  15  kappa       double scalar            outlier rejection threshold in sigma
+ *                                             (<= 0: no rejection)
+ *  16  sL_preset   long   scalar            non-zero: sL is given and held fixed
+ *  17  mask        byte   [ncols,nrows]     in/out, 0 = bad (updated by the kappa clip)
+ *  18  model       double [ncols,nrows]     OUTPUT model swath
+ *  19  sP          double [ncols]           OUTPUT spectrum per detector pixel
+ *  20  sP_fine     double [ncols*osample_x] OUTPUT fine spectrum
+ *  21  sL          double [ny]              in/out slit function,
+ *                                             ny = (nrows+1)*osample + 1
+ *  22  unc         double [ncols]           OUTPUT spectrum uncertainty
+ *  23  info        double [11]              OUTPUT: 0 success, 1 last sP change,
+ *                                             2 status, 3 iterations, 4 delta_x (columns
+ *                                             at each swath edge that are set to 0),
+ *                                             5 dropped zeta entries, 6 sP band width,
+ *                                             7 damping ratio x, 8 resolution x [px],
+ *                                             9 damping ratio y, 10 resolution y [px]
+ *                                             (damping < 1: the penalty can ring)
  *
- * When an optional argument is not passed, the environment variable
- * SLITDEC_OX_<NAME> (SLITDEC_OX_MAXITER, _OSAMPLE_X, _MU1_X, _MU2_X, _MU3_X, _MU1_Y,
- * _MU2_Y, and for testing _T_OFFSET) overrides the default, so mkslitf.pro can be
- * steered without editing it:
- *   IDL> setenv, 'SLITDEC_OX_OSAMPLE_X=16'
- * osample_x = 1 with all mu_x = 0 is the historic slitdec model (apart from the
- * curvature being evaluated at the y-subpixel centre, see NOTES.md).
+ * Returns 0 on success, -1 on a wrong argument (a message is printed), otherwise
+ * the return value of slitdec_ox2.
  *
  * Memory layout: IDL [ncols,nrows] is column-major, i.e. C [nrows][ncols], so the
  * flat index y*ncols + x is the same on both sides and no copy is needed.
@@ -60,12 +52,8 @@
 #include <math.h>
 #include "slitdec_ox.h"
 
-extern double slitdec_ox_t_offset;
-
-/* Default spectrum penalty (see NOTES.md) */
-#define SLITDEC_OX_MU1_X 0.0
-#define SLITDEC_OX_MU2_X 0.0
-#define SLITDEC_OX_MU3_X 1.64e-4
+#define NARGS 24
+#define NINFO 11
 
 #ifdef BUILDING_REDUCE_WIN_DLL
 #define REDUCE_DLL __declspec(dllexport)
@@ -73,73 +61,73 @@ extern double slitdec_ox_t_offset;
 #define REDUCE_DLL
 #endif
 
-static double env_or(const char *name, double dflt)
+static int bad(const char *what)
 {
-    const char *s = getenv(name);
-    char *end;
-    double v;
-    if (s == NULL || *s == '\0')
-        return dflt;
-    v = strtod(s, &end);
-    return end == s ? dflt : v;
+    printf("slit_func_ox: %s\n", what);
+    return -1;
 }
 
-int REDUCE_DLL slit_func_2d(int argc, void *argv[])
+int REDUCE_DLL slit_func_ox(int argc, void *argv[])
 {
-    int ncols, nrows, osample, y_lower_lim, sL_preset, maxiter, osample_x;
-    double lambda_sL, mu_x[3], mu_y[2];
-    double *im, *PSF_curve, *sP, *sL, *unc, *model, *ycen_frac, *sP_fine = NULL, *info_out = NULL;
+    int ncols, nrows, osample, osample_x, y_lower_lim, maxiter, sL_preset;
+    double mu_x[3], mu_y[2], kappa;
+    double *im, *ycen_frac, *PSF_curve, *model, *sP, *sP_fine, *sL, *unc, *info_out;
     int *ycen_offset;
     unsigned char *mask;
-    int x, y, ny, ret;
-    double info[11] = {0};
+    int x, y, k, ny, ret;
+    double info[NINFO] = {0};
 
-    if (argc < 25)
+    if (argc != NARGS)
     {
-        printf("slit_func_2d (slitdec_ox): requires at least 25 arguments, got %d\n", argc);
-        printf("  ncols, nrows, osample, im, ycen_frac, ycen_offset, y_lower_lim, PSF_curve,\n");
-        printf("  delta_x, lambda_sP, lambda_sL, mask, model, sP, sP_old, sL, unc,\n");
-        printf("  7 x scratch, sL_preset [, maxiter, osample_x, mu1_x, mu2_x, mu3_x,\n");
-        printf("  mu1_y, mu2_y, sP_fine, info]\n");
+        printf("slit_func_ox: requires exactly %d arguments, got %d:\n", NARGS, argc);
+        printf("  ncols, nrows, osample, osample_x, im, ycen_frac, ycen_offset, y_lower_lim,\n");
+        printf("  PSF_curve, mu1_x, mu2_x, mu3_x, mu1_y, mu2_y, maxiter, kappa, sL_preset,\n");
+        printf("  mask, model, sP, sP_fine, sL, unc, info\n");
         return -1;
     }
 
     ncols       = *(int *)argv[0];
     nrows       = *(int *)argv[1];
     osample     = *(int *)argv[2];
-    im          = (double *)argv[3];
-    ycen_frac   = (double *)argv[4];
-    ycen_offset = (int *)argv[5];
-    y_lower_lim = *(int *)argv[6];
-    PSF_curve   = (double *)argv[7];
-    lambda_sL   = *(double *)argv[10];
-    mask        = (unsigned char *)argv[11];
-    model       = (double *)argv[12];
-    sP          = (double *)argv[13];
-    sL          = (double *)argv[15];
-    unc         = (double *)argv[16];
-    sL_preset   = *(int *)argv[24];
+    osample_x   = *(int *)argv[3];
+    im          = (double *)argv[4];
+    ycen_frac   = (double *)argv[5];
+    ycen_offset = (int *)argv[6];
+    y_lower_lim = *(int *)argv[7];
+    PSF_curve   = (double *)argv[8];
+    for (k = 0; k < 3; k++)
+        mu_x[k] = *(double *)argv[9 + k];
+    for (k = 0; k < 2; k++)
+        mu_y[k] = *(double *)argv[12 + k];
+    maxiter     = *(int *)argv[14];
+    kappa       = *(double *)argv[15];
+    sL_preset   = *(int *)argv[16];
+    mask        = (unsigned char *)argv[17];
+    model       = (double *)argv[18];
+    sP          = (double *)argv[19];
+    sP_fine     = (double *)argv[20];
+    sL          = (double *)argv[21];
+    unc         = (double *)argv[22];
+    info_out    = (double *)argv[23];
 
-    maxiter   = argc > 25 ? *(int *)argv[25]    : (int)env_or("SLITDEC_OX_MAXITER", 100);
-    osample_x = argc > 26 ? *(int *)argv[26]    : (int)env_or("SLITDEC_OX_OSAMPLE_X", 8);
-    mu_x[0]   = argc > 27 ? *(double *)argv[27] : env_or("SLITDEC_OX_MU1_X", SLITDEC_OX_MU1_X);
-    mu_x[1]   = argc > 28 ? *(double *)argv[28] : env_or("SLITDEC_OX_MU2_X", SLITDEC_OX_MU2_X);
-    mu_x[2]   = argc > 29 ? *(double *)argv[29] : env_or("SLITDEC_OX_MU3_X", SLITDEC_OX_MU3_X);
-    mu_y[0]   = argc > 30 ? *(double *)argv[30] : env_or("SLITDEC_OX_MU1_Y", 0.0);
-    mu_y[1]   = argc > 31 ? *(double *)argv[31] : env_or("SLITDEC_OX_MU2_Y", 0.0);
-    /* Testing: where along a y-subpixel the tilt is evaluated (0.5 = centre,
-       0 = slitdec.c, see NOTES.md); only via the environment.             */
-    slitdec_ox_t_offset = env_or("SLITDEC_OX_T_OFFSET", 0.5);
-    if (argc > 32)
-        sP_fine = (double *)argv[32];
-    if (argc > 33)
-        info_out = (double *)argv[33];
-    info[4] = -11; /* ask for the extended info */
-
-    if (lambda_sL <= 0.0)
-        lambda_sL = 1.0;
-    if (osample_x < 1)
-        osample_x = 1;
+    if (ncols < 1 || nrows < 1)
+        return bad("ncols and nrows must be >= 1");
+    if (osample < 1 || osample_x < 1)
+        return bad("osample and osample_x must be >= 1");
+    if (y_lower_lim < 0 || y_lower_lim >= nrows)
+        return bad("y_lower_lim must be in 0 .. nrows-1");
+    for (k = 0; k < 3; k++)
+        if (!(mu_x[k] >= 0.0) || !isfinite(mu_x[k]))
+            return bad("mu1_x, mu2_x, mu3_x must be finite and >= 0");
+    for (k = 0; k < 2; k++)
+        if (!(mu_y[k] >= 0.0) || !isfinite(mu_y[k]))
+            return bad("mu1_y, mu2_y must be finite and >= 0");
+    if (mu_y[0] == 0.0 && mu_y[1] == 0.0)
+        return bad("mu1_y or mu2_y must be > 0: without a penalty the slit function is ill-posed");
+    if (maxiter < 1)
+        return bad("maxiter must be >= 1");
+    if (!isfinite(kappa))
+        return bad("kappa must be finite");
 
     ny = osample * (nrows + 1) + 1;
 
@@ -152,7 +140,7 @@ int REDUCE_DLL slit_func_2d(int argc, void *argv[])
     if (!ycen || !slitcurve || !slitdeltas || !pix_unc)
     {
         free(ycen); free(slitcurve); free(slitdeltas); free(pix_unc);
-        return -1;
+        return bad("out of memory");
     }
     for (x = 0; x < ncols; x++)
     {
@@ -177,17 +165,17 @@ int REDUCE_DLL slit_func_2d(int argc, void *argv[])
         sP[x] = norm > 0.0 ? sP[x] / norm : -1000.0;
     }
 
+    info[4] = -11; /* ask for the extended info */
     ret = slitdec_ox2(ncols, nrows, im, pix_unc, mask, ycen, slitcurve, slitdeltas,
-                          osample, osample_x, mu_x, 3, mu_y, 2, lambda_sL, maxiter,
-                          10.0,      /* kappa: 10-sigma outlier rejection */
-                          sL_preset, /* use_preset */
-                          0,         /* weight_mode: none */
-                          -1.0,      /* noise_floor: unused */
-                          sP, sP_fine, sL, model, unc, info, y_lower_lim);
+                      osample, osample_x, mu_x, 3, mu_y, 2,
+                      0.0,       /* lambda_sL: not used, mu_y is the only sL penalty */
+                      maxiter, kappa, sL_preset,
+                      0,         /* weight_mode: none */
+                      -1.0,      /* noise_floor: unused */
+                      sP, sP_fine, sL, model, unc, info, y_lower_lim);
 
-    if (info_out != NULL)
-        for (x = 0; x < 11; x++)
-            info_out[x] = info[x];
+    for (k = 0; k < NINFO; k++)
+        info_out[k] = info[k];
 
     free(ycen);
     free(slitcurve);

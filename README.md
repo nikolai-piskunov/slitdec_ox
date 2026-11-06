@@ -53,7 +53,7 @@ This builds three shared libraries with the system C compiler:
 | library | contents |
 |---|---|
 | `libslitdec_ox.so` | slitdec_ox, for Python |
-| `libslitdec_ox_idl.so` | `slit_func_2d` entry point for IDL REDUCE |
+| `libslitdec_ox_idl.so` | `slit_func_ox` entry point for IDL REDUCE |
 | `libslitdec_orig.so` | unchanged slitdec, for comparisons |
 
 ## Python
@@ -75,20 +75,25 @@ damping ratio and nominal resolution [px] of the penalties in x and y.
 
 ## IDL REDUCE
 
-`libslitdec_ox_idl.so` exports `slit_func_2d` with the argument list that
-`mkslitf.pro` already uses, so REDUCE runs unchanged:
+`libslitdec_ox_idl.so` exports `slit_func_ox`. All 24 arguments are required and there
+are no defaults, so every call states the parameters it uses (list in the header of
+`slitdec_ox_idl.c`):
 
 ```idl
-mkslitf, ..., LIBRARY_NAME='/path/to/slitdec_ox/libslitdec_ox_idl.so'
+iret = CALL_EXTERNAL(lib, 'slit_func_ox', ncols, nrows, osample, osample_x, im, $
+         ycen_frac, ycen_offset, y_lower_lim, PSF_curve, mu1_x, mu2_x, mu3_x, $
+         mu1_y, mu2_y, maxiter, kappa, sL_preset, mask, model, sP, sP_fine, sL, unc, info)
 ```
 
-The new parameters can be passed as optional trailing arguments (see the header of
-`slitdec_ox_idl.c`), or set through environment variables without editing REDUCE:
+Compared with REDUCE's `slit_func_2d`, `lambda_sP` and `lambda_sF` are replaced by the
+`mu` penalties, and `delta_x` (returned in `info[4]`), `sP_old` and the scratch arrays
+are gone. In `mkslitf.pro` the call is selected with a structure that must hold every
+parameter:
 
 ```idl
-setenv, 'SLITDEC_OX_OSAMPLE_X=8'   ; fine spectrum bins per column (default 8)
-setenv, 'SLITDEC_OX_MU3_X=1.64e-4' ; spectrum penalty (default)
-setenv, 'SLITDEC_OX_MU1_Y=0.01'    ; slit-function penalty (default: REDUCE's lambda_sf)
+mkslitf, ..., SLITDEC_OX={LIBRARY:'/path/to/libslitdec_ox_idl.so', OSAMPLE_X:8L, $
+                          MU1_X:0d, MU2_X:0d, MU3_X:1.64d-4, MU1_Y:1d-2, MU2_Y:0d, $
+                          MAXITER:100L, KAPPA:10d}
 ```
 
 `idl_test_ox.pro` compares the library with an existing `reduce.so` on a swath
@@ -109,9 +114,11 @@ saved from `mkslitf.pro`.
 
 ## Status
 
-Work in progress. Tested on synthetic swaths and, through IDL REDUCE, on one swath
-saved from `mkslitf.pro`. Not yet done: full extractions of real frames, speed (5–10× slower than
-slitdec on tilted swaths), memory use at high oversampling.
+Work in progress. Tested on synthetic swaths, on one CRIRES+ swath saved from
+`mkslitf.pro`, and in full SALT-HRS red-arm reductions with IDL REDUCE (white extraction
+noise where REDUCE's is blue; differences in the cores of deep narrow lines still being
+investigated). Not yet done: speed (about 3× slower than REDUCE per SALT-HRS frame),
+memory use at high oversampling.
 
 ## Reference
 

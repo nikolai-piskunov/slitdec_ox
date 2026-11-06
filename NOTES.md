@@ -61,16 +61,24 @@ now). The same one-line fix applies to slitdec.c.
 
 ## IDL REDUCE interface (slitdec_ox_idl.c)
 
-`libslitdec_ox_idl.so` (built by `build.sh`) exports `slit_func_2d` with the 25-argument
-CALL_EXTERNAL list of mkslitf.pro, so it replaces `reduce.so` without IDL changes:
-`mkslitf, ..., LIBRARY_NAME='~/Slit_func/slitdec_ox/libslitdec_ox_idl.so'` (or link
-`slitdec_ox.c` + `slitdec_ox_idl.c` into reduce.so instead of `slitdec.c` + `slitdec_idl.c`).
-Optional arguments 25-33 are maxiter, osample_x, mu1_x, mu2_x, mu3_x, mu1_y, mu2_y (all
-scalars), sP_fine (out) and info (out, dblarr(11)); when absent, the env vars
-`SLITDEC_OX_MAXITER/OSAMPLE_X/MU1_X/MU2_X/MU3_X/MU1_Y/MU2_Y` apply
-(`setenv,'SLITDEC_OX_OSAMPLE_X=16'`), then the defaults 100 / 8 / 0 / 0 / 1.64e-4 / 0 / 0.
-mu1_y = mu2_y = 0 means REDUCE's `lambda_sf` as before. `lambda_sP` is ignored (mu_x
-replaces it); kappa = 10, weights `none`, as in ../slitdec_idl.c.
+`libslitdec_ox_idl.so` (built by `build.sh`) exports `slit_func_ox`: 24 arguments, all
+required, no defaults, no environment variables (header of `slitdec_ox_idl.c`):
+ncols, nrows, osample, osample_x, im, ycen_frac, ycen_offset, y_lower_lim, PSF_curve,
+mu1_x, mu2_x, mu3_x, mu1_y, mu2_y, maxiter, kappa, sL_preset, mask, model, sP, sP_fine,
+sL, unc, info. Wrong argument count, negative mu, mu1_y = mu2_y = 0 (ill-posed sL: sP
+shifts by 1.6 % on test.sav), osample_x < 1 or maxiter < 1 return -1 with a message.
+Gone compared with REDUCE's slit_func_2d: lambda_sP and lambda_sF (replaced by mu_x,
+mu_y; lambda_sL is not reachable from IDL), delta_x (computed inside and returned in
+info[4]: columns set to 0 at each swath edge), sP_old and the seven scratch arrays.
+mkslitf.pro still needs its own delta_x to widen and overlap the swaths; it checks
+info[4] <= its idelta_x. The tilt reference point (t_offset) is fixed at the subpixel
+centre; tests set the library global `slitdec_ox_t_offset` directly.
+
+mkslitf.pro (local copy in ~/Instruments/SALT-HRS, with local hamspec.pro and
+getspec.pro that pass it on) takes `SLITDEC_OX={LIBRARY, OSAMPLE_X, MU1_X, MU2_X,
+MU3_X, MU1_Y, MU2_Y, MAXITER, KAPPA}`; a missing or unknown tag stops. Without the
+keyword it runs the original REDUCE library as before. reduce.pro there defines the
+structure once and writes it into the header of the .sp.ech files (E_OX* keywords).
 
 The trace row is an argument of the general entry point `slitdec_ox2(..., y_lower_lim)`;
 mkslitf.pro passes asymmetric values (19 for 40 rows in test.sav, any split for
@@ -79,19 +87,34 @@ two-fibre slits) where slitdec_ox() assumes nrows/2. Asymmetric cuts of test.sav
 clean under AddressSanitizer.
 
 `test_idl_interface.py [test.sav] [ref.so ...]` emulates CALL_EXTERNAL on the swath that
-mkslitf.pro saved (../test.sav: 412 x 40, osamp 10, shear -0.15 px/row). Result: with
-osample_x = 1, mu_x = 0, t_offset = 0 it matches the current REDUCE library
-(../slitdec.c + ../slitdec_idl.c) to 9e-16 and the original slit_func_2d to 3e-4 rms. The
-default (ox 8) differs from both by 2.9% rms in sP: ~1e-3 in the continuum, up to a few % on
-steep line flanks (sP spans 2.4k-57k there), i.e. the linear-interpolation line bias above.
+mkslitf.pro saved (../test.sav: 412 x 40, osamp 10, shear -0.15 px/row). With
+osample_x = 1, mu_x = 0, t_offset = 0 and mu1_y = 1.927e-3 (lambda_sf = 2 on this swath,
+obtained from slitdec_ox2's legacy path) slit_func_ox reproduces reduce.so.darwin.arm64.64
+to 1e-9 rel. in sP, |dsL| 3e-8, identical mask. With ox 8 the sP differs from both by
+2.9 % rms: ~1e-3 in the continuum, up to a few % on steep line flanks, i.e. the
+linear-interpolation line bias above.
 
-**Tested in IDL 9.3** (`idl_test_ox.pro`, `idl -e "idl_test_ox"`): the 25-argument mkslitf.pro
-call on ../test.sav works with libslitdec_ox_idl.so. With `SLITDEC_OX_OSAMPLE_X=1`,
-`SLITDEC_OX_MU3_X=0` and `SLITDEC_OX_T_OFFSET=0` (testing only: slitdec.c's tilt
-reference point) it reproduces the installed reduce.so.darwin.arm64.64 (and .new) to
-|dsP| 1e-10, |dsL| 3e-16, identical mask. Optional arguments, info and sP_fine come back
-(mean of sP_fine = sP exactly). The legacy lambda_sf = 2 and its reported equivalent
-mu1_y = 1.93e-3 give the same sP to 1e-12; mu1_y = 1e-2 changes sP by 2e-5 rms.
+**IDL 9.3** (`idl -e "idl_test_ox"`): slit_func_ox works from IDL; mean of sP_fine = sP
+exactly; mu1_y 1e-3 / 1e-2 / 1e-1 (resolution 0.10 / 0.31 / 0.99 px) change sP by
+2e-5 / - / 1.6e-4 rms. With the t_offset of slitdec_ox (subpixel centre) the
+historic model differs from reduce.so by 2.3e-3 rms.
+
+**SALT-HRS red, full reduce.pro runs** (image slicer, tilted slit; Nov 2026,
+~/Instruments/SALT-HRS/Reduced_red_{orig,mu1_def,mu1_0.01}; 21 science frames, 32 orders):
+- The SLITDEC_OX path of mkslitf.pro reproduces Reduced_red_mu1_0.01 bit for bit and
+  the original path Reduced_red_orig. 26 s per frame against 9 s for reduce.so.
+- Noise: the power spectrum of the difference of two consecutive exposures is white
+  with slitdec_ox (1.1-1.4 x the low-frequency level up to Nyquist); with reduce.so it
+  rises to 3.7 x at Nyquist (the two-column tilt weighting). Same power below 0.3 rad/px,
+  0.37 x at Nyquist: point-to-point scatter 0.67 x.
+- Deep narrow lines (telluric O2 band in order 17, 21 of 21 frames): line cores up to
+  20 % shallower than reduce.so at equal equivalent width (to 0.2 %), i.e. the new
+  profile is blunter. Not explained by mu3_x (transfer 1 - 2e-4 at 1 rad/px). Which is
+  right is open: candidates are the reduce.so line bias and an inaccurate slit tilt
+  (get_shear), which the exact overlap model does not average away.
+- mu1_y: 1e-2 against legacy lambda_sf = 2 (~2e-3) changes sP by 3e-4 median, at most
+  a few % in single pixels. Expected: the slit-function penalty acts on sub-pixel
+  structure of sL, which the spectrum integrates over.
 
 ## Penalties: mu_k in x and y (penalty_design.py, sl_penalty_study.py)
 
@@ -124,14 +147,17 @@ penalties compared at equal nominal resolution r.
 - Critically damped 1+2 ≈ k = 1 within a few %: no measurable gain from mu2_y.
 - Realistic 1 px edges: r = 0.3 px (mu1_y = (0.3/π)^2 = 9e-3) keeps the edge width of
   legacy (r ≈ 0.1-0.14) with 1.6x lower noise; r = 0.6 widens edges by 0.2 px.
-So use k = 1 in y; mu1_y ≈ 1e-2 is a reasonable start. Not default yet (IDL keeps
-lambda_sf). Choosing r per swath from the data (GCV or discrepancy principle) is the
+So use k = 1 in y; mu1_y ≈ 1e-2 is a reasonable start. Choosing r per swath from the data (GCV or discrepancy principle) is the
 objective next step.
 
 ## Not done
 
 - Real frames: the ANDES flat/FP in `~/ANDES/E2E/fp_slitAB` are not on this machine.
 - CRIRES+ through IDL REDUCE: tested in IDL on one saved swath (test.sav); full mkslitf runs on CRIRES+ frames not done.
+- SALT-HRS line cores (above): test one order with osample_x 1 / 8 and mu_x 0 to separate
+  the model from the penalty; improve get_shear.pro and repeat.
+- mkslitf.pro: the first and last swath of an order copy the delta_x edge columns that
+  slitdec_ox sets to 0 (blz starts/ends with zeros, as with reduce.so).
 - Memory: the zeta list holds ≈ (osample+1)(osample_x+1) entries per pixel
   (≈ 90 MB for a 500 × 136 swath at 8/8; the list length is now counted exactly).
 - Speed: no flat fast path for osample_x > 1; 5× (ox 8) to 10× (ox 16) slower than
